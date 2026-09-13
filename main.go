@@ -22,7 +22,7 @@ func main() {
 	// 1. Setup API Client pointing to DeepSeek (or OpenAI)
 	apiKey := os.Getenv("DEEPSEEK_API_KEY")
 	if apiKey == "" {
-		log.Fatal("DEEPSEEK_API_KEY environment variable is not set")
+		log.Println("WARNING: DEEPSEEK_API_KEY is not set. Inference endpoints will fail.")
 	}
 
 	config := openai.DefaultConfig(apiKey)
@@ -45,10 +45,19 @@ func main() {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/v1/ingest", api.HandleIngest)
 	mux.HandleFunc("/api/v1/ask", api.HandleAsk)
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte("Hermes is online and ready!"))
+	})
 
 	// 6. Graceful Shutdown Setup (CSAPP Concept)
+	port := os.Getenv("PORT")
+	if port == "" {
+		port = "8080"
+	}
+	
 	srv := &http.Server{
-		Addr:    ":8080",
+		Addr:    ":" + port,
 		Handler: mux,
 	}
 
