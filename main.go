@@ -1,85 +1,143 @@
 package main
 
 import (
-	"context"
+	"encoding/json"
+	"fmt"
 	"log"
 	"net/http"
 	"os"
-	"os/signal"
-	"syscall"
 	"time"
-
-	"github.com/qwerty/hermes/internal/agent"
-	"github.com/qwerty/hermes/internal/handlers"
-	"github.com/qwerty/hermes/internal/httpclient"
-	"github.com/qwerty/hermes/internal/rag"
-	openai "github.com/sashabaranov/go-openai"
 )
 
-func main() {
-	log.Println("Starting Hermes Agentic RAG Pipeline...")
+// WebhookTask represents a single webhook to be dispatched
+type WebhookTask struct {
+	ID        int
+	Payload   string
+	CreatedAt time.Time
+}
 
-	// 1. Setup API Client pointing to DeepSeek (or OpenAI)
-	apiKey := os.Getenv("DEEPSEEK_API_KEY")
-	if apiKey == "" {
-		log.Println("WARNING: DEEPSEEK_API_KEY is not set. Inference endpoints will fail.")
+// Dispatcher manages the worker pool
+type Dispatcher struct {
+	WorkerPool chan chan WebhookTask
+	JobQueue   chan WebhookTask
+	MaxWorkers int
+}
+
+func NewDispatcher(maxWorkers int, maxQueue int) *Dispatcher {
+	return &Dispatcher{
+		WorkerPool: make(chan chan WebhookTask, maxWorkers),
+		JobQueue:   make(chan WebhookTask, maxQueue),
+		MaxWorkers: maxWorkers,
+	}
+}
+
+func (d *Dispatcher) Run() {
+	for i := 0; i < d.MaxWorkers; i++ {
+		worker := NewWorker(d.WorkerPool)
+		worker.Start()
 	}
 
-	config := openai.DefaultConfig(apiKey)
-	config.BaseURL = "https://api.deepseek.com/v1" // Use DeepSeek compatible endpoint
-	config.HTTPClient = httpclient.NewResilientClient()
+	go func() {
+		for job := range d.JobQueue {
+			go func(job WebhookTask) {
+				workerChannel := <-d.WorkerPool
+				workerChannel <- job
+			}(job)
+		}
+	}()
+}
 
-	client := openai.NewClientWithConfig(config)
+// Worker executes tasks
+type Worker struct {
+	WorkerPool chan chan WebhookTask
+	JobChannel chan WebhookTask
+	quit       chan bool
+}
 
-	// 2. Initialize the In-Memory Vector Store
-	vectorStore := rag.NewVectorStore()
+func NewWorker(workerPool chan chan WebhookTask) Worker {
+	return Worker{
+		WorkerPool: workerPool,
+		JobChannel: make(chan WebhookTask),
+		quit:       make(chan bool),
+	}
+}
 
-	// 3. Initialize the Concurrent Embedder (Worker Pool: 50)
-	embedder := rag.NewEmbedder(client, vectorStore, 50)
+func (w Worker) Start() {
+	go func() {
+		for {
+			w.WorkerPool <- w.JobChannel
+			select {
+			case job := <-w.JobChannel:
+				// Simulate HTTP request latency (e.g., hitting an external API)
+				time.Sleep(50 * time.Millisecond)
+				log.Printf("Worker dispatched webhook ID: %d", job.ID)
+			case <-w.quit:
+				return
+			}
+		}
+	}()
+}
 
-	// 4. Initialize the Agent Orchestrator
-	orchestrator := agent.NewOrchestrator(client, vectorStore)
+// HTTP Handlers
+func (d *Dispatcher) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
 
-	// 5. Setup HTTP Routes
-	api := handlers.NewAPI(embedder, orchestrator)
-	mux := http.NewServeMux()
-	mux.HandleFunc("/api/v1/ingest", api.HandleIngest)
-	mux.HandleFunc("/api/v1/ask", api.HandleAsk)
-	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusOK)
-		w.Write([]byte("Hermes is online and ready!"))
+	var req struct {
+		Count int `json:"count"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "Invalid body", http.StatusBadRequest)
+		return
+	}
+
+	if req.Count <= 0 || req.Count > 10000 {
+		req.Count = 10
+	}
+
+	for i := 1; i <= req.Count; i++ {
+		task := WebhookTask{
+			ID:        i,
+			Payload:   `{"event": "user.created"}`,
+			CreatedAt: time.Now(),
+		}
+		d.JobQueue <- task
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]string{
+		"message": fmt.Sprintf("Successfully enqueued %d webhooks for background processing", req.Count),
 	})
+}
 
-	// 6. Graceful Shutdown Setup (CSAPP Concept)
+func main() {
 	port := os.Getenv("PORT")
 	if port == "" {
 		port = "8080"
 	}
+
+	// Init dispatcher with 50 workers and a buffer of 10,000 jobs
+	dispatcher := NewDispatcher(50, 10000)
+	dispatcher.Run()
+
+	mux := http.NewServeMux()
 	
-	srv := &http.Server{
-		Addr:    ":" + port,
-		Handler: mux,
-	}
-
-	go func() {
-		log.Println("Listening on :8080...")
-		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			log.Fatalf("Server error: %v", err)
+	// Serve static frontend
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/" {
+			http.NotFound(w, r)
+			return
 		}
-	}()
+		http.ServeFile(w, r, "index.html")
+	})
 
-	// Intercept SIGINT (Ctrl+C) and SIGTERM
-	quit := make(chan os.Signal, 1)
-	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
-	<-quit
-	log.Println("Shutting down server gracefully...")
+	// Serve API endpoint
+	mux.HandleFunc("/api/v1/dispatch", dispatcher.ServeHTTP)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-
-	if err := srv.Shutdown(ctx); err != nil {
-		log.Fatalf("Server forced to shutdown: %v", err)
+	log.Printf("Hermes Webhook Dispatcher started on port %s", port)
+	if err := http.ListenAndServe(":"+port, mux); err != nil {
+		log.Fatalf("Server failed: %v", err)
 	}
-
-	log.Println("Server exiting")
 }

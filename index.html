@@ -1,0 +1,159 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Hermes Webhook Dispatcher</title>
+    <style>
+        :root {
+            --bg: #0f172a;
+            --surface: #1e293b;
+            --text: #f8fafc;
+            --primary: #3b82f6;
+            --success: #10b981;
+            --error: #ef4444;
+            --border: #334155;
+        }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+            background-color: var(--bg);
+            color: var(--text);
+            margin: 0;
+            padding: 2rem;
+            display: flex;
+            justify-content: center;
+        }
+        .container {
+            max-width: 800px;
+            width: 100%;
+            background: var(--surface);
+            padding: 2rem;
+            border-radius: 12px;
+            border: 1px solid var(--border);
+            box-shadow: 0 4px 6px -1px rgb(0 0 0 / 0.1);
+        }
+        h1 {
+            margin-top: 0;
+            font-size: 1.5rem;
+            border-bottom: 1px solid var(--border);
+            padding-bottom: 1rem;
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+        }
+        .status {
+            background: rgba(16, 185, 129, 0.2);
+            color: var(--success);
+            padding: 0.25rem 0.5rem;
+            border-radius: 4px;
+            font-size: 0.875rem;
+            font-weight: 500;
+        }
+        p {
+            color: #94a3b8;
+            line-height: 1.6;
+        }
+        .demo-box {
+            background: #020617;
+            padding: 1.5rem;
+            border-radius: 8px;
+            margin-top: 2rem;
+        }
+        input, button {
+            padding: 0.75rem 1rem;
+            border-radius: 6px;
+            border: 1px solid var(--border);
+            font-size: 1rem;
+        }
+        input {
+            background: var(--bg);
+            color: var(--text);
+            width: 150px;
+        }
+        button {
+            background: var(--primary);
+            color: white;
+            border: none;
+            cursor: pointer;
+            font-weight: 600;
+            transition: opacity 0.2s;
+        }
+        button:hover {
+            opacity: 0.9;
+        }
+        button:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
+        .flex {
+            display: flex;
+            gap: 1rem;
+            align-items: center;
+            margin-bottom: 1rem;
+        }
+        #log {
+            background: var(--bg);
+            padding: 1rem;
+            border-radius: 6px;
+            border: 1px solid var(--border);
+            height: 200px;
+            overflow-y: auto;
+            font-family: monospace;
+            font-size: 0.875rem;
+            color: #10b981;
+        }
+        .log-entry { margin: 0.25rem 0; }
+        .log-error { color: var(--error); }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>⚡ Hermes Dispatcher <span class="status">Online</span></h1>
+        <p>
+            Hermes is a high-throughput webhook dispatcher written in Go. It uses a buffered channel and a fixed pool of goroutines (workers) to concurrently process bulk outbound HTTP requests without blocking the main server or causing memory exhaustion.
+        </p>
+        
+        <div class="demo-box">
+            <h3>Live Concurrency Test</h3>
+            <p style="font-size: 0.9rem; margin-top: 0;">Submit mock webhooks to the Go backend. The worker pool will process them concurrently.</p>
+            <div class="flex">
+                <input type="number" id="taskCount" value="50" min="1" max="1000">
+                <button id="dispatchBtn" onclick="dispatch()">Dispatch Webhooks</button>
+            </div>
+            <div id="log">Waiting for tasks...</div>
+        </div>
+    </div>
+
+    <script>
+        const logEl = document.getElementById('log');
+        const btn = document.getElementById('dispatchBtn');
+
+        function appendLog(msg, isError = false) {
+            const div = document.createElement('div');
+            div.className = `log-entry ${isError ? 'log-error' : ''}`;
+            div.textContent = `[${new Date().toISOString().split('T')[1].slice(0,-1)}] ${msg}`;
+            logEl.prepend(div);
+        }
+
+        async function dispatch() {
+            const count = document.getElementById('taskCount').value;
+            btn.disabled = true;
+            appendLog(`Enqueuing ${count} webhooks...`);
+            
+            try {
+                const res = await fetch('/api/v1/dispatch', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ count: parseInt(count) })
+                });
+                const data = await res.json();
+                appendLog(`Success: ${data.message}`);
+            } catch (err) {
+                appendLog(`Error: ${err.message}`, true);
+            } finally {
+                btn.disabled = false;
+            }
+        }
+    </script>
+</body>
+</html>
