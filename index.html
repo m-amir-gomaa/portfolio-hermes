@@ -49,6 +49,10 @@
             font-size: 0.875rem;
             font-weight: 500;
         }
+        .status.connecting {
+            background: rgba(234, 179, 8, 0.2);
+            color: #eab308;
+        }
         p {
             color: #94a3b8;
             line-height: 1.6;
@@ -96,11 +100,12 @@
             padding: 1rem;
             border-radius: 6px;
             border: 1px solid var(--border);
-            height: 200px;
+            height: 300px;
             overflow-y: auto;
             font-family: monospace;
             font-size: 0.875rem;
             color: #10b981;
+            scroll-behavior: smooth;
         }
         .log-entry { margin: 0.25rem 0; }
         .log-error { color: var(--error); }
@@ -108,37 +113,57 @@
 </head>
 <body>
     <div class="container">
-        <h1>⚡ Hermes Dispatcher <span class="status">Online</span></h1>
+        <h1>⚡ Hermes Dispatcher <span id="connectionStatus" class="status connecting">Connecting...</span></h1>
         <p>
-            Hermes is a high-throughput webhook dispatcher written in Go. It uses a buffered channel and a fixed pool of goroutines (workers) to concurrently process bulk outbound HTTP requests without blocking the main server or causing memory exhaustion.
+            Hermes is a high-throughput webhook dispatcher written in Go. It uses a buffered channel and a fixed pool of 50 goroutines to concurrently process outbound HTTP requests without blocking the main server.
         </p>
         
         <div class="demo-box">
-            <h3>Live Concurrency Test</h3>
-            <p style="font-size: 0.9rem; margin-top: 0;">Submit mock webhooks to the Go backend. The worker pool will process them concurrently.</p>
+            <h3>Live Concurrency Test (SSE Stream)</h3>
+            <p style="font-size: 0.9rem; margin-top: 0;">Submit mock webhooks. The logs below are streamed in real-time from the Go backend as the worker pool processes the queue.</p>
             <div class="flex">
-                <input type="number" id="taskCount" value="50" min="1" max="1000">
+                <input type="number" id="taskCount" value="150" min="1" max="10000">
                 <button id="dispatchBtn" onclick="dispatch()">Dispatch Webhooks</button>
             </div>
-            <div id="log">Waiting for tasks...</div>
+            <div id="log"></div>
         </div>
     </div>
 
     <script>
         const logEl = document.getElementById('log');
         const btn = document.getElementById('dispatchBtn');
+        const statusEl = document.getElementById('connectionStatus');
 
         function appendLog(msg, isError = false) {
             const div = document.createElement('div');
             div.className = `log-entry ${isError ? 'log-error' : ''}`;
             div.textContent = `[${new Date().toISOString().split('T')[1].slice(0,-1)}] ${msg}`;
-            logEl.prepend(div);
+            logEl.appendChild(div);
+            logEl.scrollTop = logEl.scrollHeight;
         }
+
+        // Setup Server-Sent Events Connection
+        const evtSource = new EventSource('/api/v1/stream');
+        
+        evtSource.onopen = function() {
+            statusEl.textContent = 'Live';
+            statusEl.className = 'status';
+            appendLog('Connected to Hermes live stream.');
+        };
+
+        evtSource.onmessage = function(event) {
+            appendLog(event.data);
+        };
+
+        evtSource.onerror = function() {
+            statusEl.textContent = 'Reconnecting...';
+            statusEl.className = 'status connecting';
+        };
 
         async function dispatch() {
             const count = document.getElementById('taskCount').value;
             btn.disabled = true;
-            appendLog(`Enqueuing ${count} webhooks...`);
+            appendLog(`[HTTP POST] Sending ${count} webhooks to ingest API...`);
             
             try {
                 const res = await fetch('/api/v1/dispatch', {
@@ -147,7 +172,7 @@
                     body: JSON.stringify({ count: parseInt(count) })
                 });
                 const data = await res.json();
-                appendLog(`Success: ${data.message}`);
+                appendLog(`[HTTP Response] ${data.message}`);
             } catch (err) {
                 appendLog(`Error: ${err.message}`, true);
             } finally {
